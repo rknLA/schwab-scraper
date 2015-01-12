@@ -8,6 +8,19 @@ var SCHWAB_LOGIN_URL = "https://www.schwab.com/public/schwab/client_home"
   , SCHWAB_LOGGED_IN_URL = "https://client.schwab.com/Accounts/Summary/Summary.aspx?ShowUN=YES"
   , SCHWAB_HISTORY_URL = "https://client.schwab.com/Accounts/History/BankHistory.aspx"
 
+var CSS = {
+  'account': {
+    'nextLink': "a:contains('Next>')",
+    'transactionRow': '#tblTransaction .data-row', // this includes headers n such
+  },
+  'login': {
+    'usernameField': '#SignonAccountNumber',
+    'passwordField': '#SignonPassword',
+  },
+  'overview': {
+    'accountLink': '.section-bank .data-row #spanOverlayAccountId a'
+  }
+}
 
 var STATES = {
   'loading': 'loading',
@@ -36,8 +49,8 @@ var clearLoadTimeout = function() {
 
 var login = function(page, username, password) {
   page.evaluate(function(username, password){
-    $('#SignonAccountNumber').val(username);
-    $('#SignonPassword').val(password);
+    $(CSS.login.usernameField).val(username);
+    $(CSS.login.passwordField).val(password);
     submitLogin();
   }, username, password);
 
@@ -53,7 +66,7 @@ var scrapeAccount = function() {
   page.evaluate(function(){
     window.setTimeout(function() {
       $(document).ready(function() {
-        var accountNodes = $('.section-bank .data-row #spanOverlayAccountId a');
+        var accountNodes = $(CSS.overview.accountLink);
         var href = accountNodes[0].href;
         console.log("account href: ", href);
         eval(href);
