@@ -22,6 +22,8 @@ var CSS = {
   }
 }
 
+var scrapedTransactions = [];
+
 var STATES = {
   'loading': 'loading',
   'home': 'home',
@@ -48,22 +50,22 @@ var clearLoadTimeout = function() {
 };
 
 var login = function(page, username, password) {
-  page.evaluate(function(username, password){
+  page.evaluate(function(username, password, CSS){
     $(CSS.login.usernameField).val(username);
     $(CSS.login.passwordField).val(password);
     submitLogin();
-  }, username, password);
+  }, username, password, CSS);
 
   // timeout and kill phantom if we haven't logged in successfully after
   // 5 seconds.
   setLoadTimeout("Timed out loading logged in page. Quitting.", 5000);
 };
 
-var scrapeAccount = function() {
+var navigateToAccount = function() {
   // I only have one Bank Account there now, so I'm not yet bothering to make
   // this something that iterates over the accounts.
-  console.log("Attempting to scrape account.");
-  page.evaluate(function(){
+  console.log("Navigating to account page");
+  page.evaluate(function(CSS){
     window.setTimeout(function() {
       $(document).ready(function() {
         var accountNodes = $(CSS.overview.accountLink);
@@ -71,12 +73,69 @@ var scrapeAccount = function() {
         console.log("account href: ", href);
         eval(href);
       });
-    }, 1000);
-  });
+    }, 3000);
+  }, CSS);
 
   // timeout and kill phantom if we haven't logged in successfully after
   // 5 seconds.
-  setLoadTimeout("Timed out loading account page. Quitting.", 5000);
+  setLoadTimeout("Timed out loading account page. Quitting.", 6000);
+};
+
+var scrapeAccountPage = function() {
+  console.log("Scraping account page");
+  var transactions = page.evaluate(function(CSS) {
+    var transactions = [];
+    var rows = document.querySelectorAll(CSS.account.transactionRow);
+    var i;
+    var foundPendingTransactions = false;
+    var foundPostedTransactions = false;
+    for (i = 0; i < rows.length; ++i) {
+      var row = rows[i];
+      var numChildren = row.children.length;
+
+      // first row should have 3 children, followed by rows of 15 children,
+      // followed by another header of 3 children that is the Posted
+      // Transactions header.  We want all the rows after that last one.
+      if (!foundPendingTransactions) {
+        if (numChildren == 1) {
+          foundPendingTransactions = true;
+        }
+        continue;
+      }
+
+      if (!foundPostedTransactions) {
+        if (numChildren == 1) {
+          foundPostedTransactions = true;
+        }
+        continue;
+      }
+
+      if (numChildren != 7) {
+        console.log("Found an anomalie in row " + i + ". Row has "
+            + numChildren + " children instead of 7");
+      }
+
+      // table format is DATE, TYPE, Check #, Descr, Withdr, Depos, Balance
+      var transaction = {
+        'date': row.children[0].innerText,
+        'type': row.children[1].innerText,
+        'checkNumber': row.children[2].innerText,
+        'description': row.children[3].innerText,
+        'withdrawal': row.children[4].innerText,
+        'deposit': row.children[5].innerText,
+        'balance': row.children[6].innerText
+      };
+      transactions.push(transaction)
+
+      console.log(JSON.stringify(transaction));
+    }
+    return transactions;
+  }, CSS);
+
+  console.log(JSON.stringify(transactions));
+
+  console.log('exiting');
+  phantom.exit();
 };
 
 
@@ -103,7 +162,7 @@ page.onUrlChanged = function(targetUrl) {
       currentState = STATES.loggedin
       clearLoadTimeout();
       console.log("Loaded logged in page");
-      scrapeAccount();
+      navigateToAccount();
     } else {
       console.log("Invalid login");
       phantom.exit();
@@ -111,10 +170,22 @@ page.onUrlChanged = function(targetUrl) {
   } else if (currentState == STATES.loggedin) {
     if (targetUrl == SCHWAB_HISTORY_URL) {
       clearLoadTimeout();
+      currentState = STATES.account;
       console.log('loaded account page');
     } else {
       console.log('error loading account page');
+      phantom.exit()
     }
-    phantom.exit()
   }
+};
+
+page.onLoadFinished = function(status) {
+  if (currentState == STATES.account) {
+    scrapeAccountPage();
+  };
+};
+
+// debugging.
+page.onConsoleMessage = function(msg) {
+  system.stderr.writeLine('console: ' + msg);
 };
