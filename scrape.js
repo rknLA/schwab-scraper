@@ -1,7 +1,39 @@
-console.log('Beginning Schwab Scraper...');
-
+#!/usr/bin/env phantomjs
 var page = require('webpage').create()
   , system = require('system')
+  , fs = require('fs');
+
+console.log('Beginning Schwab Scraper...');
+
+// defaults
+var DEBUG = false;
+var OUT_FORMAT = 'csv';
+var OUT_FILE = './transactions.csv';
+var STOP_DATE = new Date('2014-09-01')
+
+/*
+if (argv._ === undefined || argv._.length != 1) {
+  console.log("Usage: phantomjs --ssl-protocol=any scrape.js [options] outfile");
+  phantom.exit();
+}
+
+OUT_FILE = argv._[0];
+
+if (argv.format) {
+  if (argv.format != 'json' || argv.format != 'csv') {
+    console.log("Usage: phantomjs --ssl-protocol=any scrape.js [options] outfile");
+    console.log("The --format argument only supports 'json' or 'csv'.");
+    phantom.exit();
+  }
+  OUT_FORMAT = argv.format
+}
+
+if (argv.debug) {
+  DEBUG = true;
+}
+*/
+
+
 
 var SCHWAB_LOGIN_URL = "https://www.schwab.com/public/schwab/client_home"
   , JQUERY_URL = "https://ajax.googleapis.com/ajax/libs/jquery/1.11.2/jquery.min.js"
@@ -83,12 +115,15 @@ var navigateToAccount = function() {
 
 var scrapeAccountPage = function() {
   console.log("Scraping account page");
-  var transactions = page.evaluate(function(CSS) {
+  var transactionInfo = page.evaluate(function(CSS) {
     var transactions = [];
     var rows = document.querySelectorAll(CSS.account.transactionRow);
     var i;
     var foundPendingTransactions = false;
     var foundPostedTransactions = false;
+
+    var earliestDate = new Date('2020-01-01');
+
     for (i = 0; i < rows.length; ++i) {
       var row = rows[i];
       var numChildren = row.children.length;
@@ -99,6 +134,13 @@ var scrapeAccountPage = function() {
       if (!foundPendingTransactions) {
         if (numChildren == 1) {
           foundPendingTransactions = true;
+
+          //but, the subsequent pages don't have pending transactions...
+          var text = row.innerText;
+          if ((text.indexOf("Posted") > -1) &&
+              (text.indexOf("Pending") == -1)) {
+            foundPostedTransactions = true;
+          }
         }
         continue;
       }
@@ -126,16 +168,39 @@ var scrapeAccountPage = function() {
         'balance': row.children[6].innerText
       };
       transactions.push(transaction)
-
       console.log(JSON.stringify(transaction));
+
+      transactionDate = new Date(transaction.date);
+      if (transactionDate < earliestDate) {
+        earliestDate = transactionDate;
+      }
     }
-    return transactions;
+
+    return {
+      'transactions': transactions,
+      'earliest': earliestDate
+    }
   }, CSS);
 
-  console.log(JSON.stringify(transactions));
 
-  console.log('exiting');
-  phantom.exit();
+  scrapedTransactions = scrapedTransactions.concat(transactionInfo.transactions);
+
+  console.log("Scraped back to " + transactionInfo.earliest);
+  if (STOP_DATE < transactionInfo.earliest) {
+    console.log("Stop date is " + STOP_DATE + ", so we keep going");
+    // keep scraping.
+    console.log("Continuing to the next page");
+    page.evaluate(function(CSS) {
+      var link = $(CSS.account.nextLink)[0];
+      console.log('link is: ', link);
+      var href = link.href;
+      eval(href);
+    }, CSS);
+  } else {
+    serializeTransactions(scrapedTransactions);
+    console.log('Done!');
+    phantom.exit();
+  }
 };
 
 
@@ -157,6 +222,7 @@ page.open(SCHWAB_LOGIN_URL, function(status) {
 });
 
 page.onUrlChanged = function(targetUrl) {
+  console.log("URL changed: ", targetUrl);
   if (currentState == STATES.home) {
     if (targetUrl == SCHWAB_LOGGED_IN_URL) {
       currentState = STATES.loggedin
@@ -180,6 +246,7 @@ page.onUrlChanged = function(targetUrl) {
 };
 
 page.onLoadFinished = function(status) {
+  console.log("Load finished: ", status);
   if (currentState == STATES.account) {
     scrapeAccountPage();
   };
@@ -187,5 +254,60 @@ page.onLoadFinished = function(status) {
 
 // debugging.
 page.onConsoleMessage = function(msg) {
-  system.stderr.writeLine('console: ' + msg);
+  if (DEBUG) {
+    system.stderr.writeLine('console: ' + msg);
+  }
 };
+
+var debug = function() {
+  if (DEBUG) {
+    console.log(arguments);
+  }
+};
+
+
+// write output
+var serializeTransactions = function(transactions) {
+  if (OUT_FORMAT == 'json') {
+    fs.write(OUT_FILE, JSON.stringify(transactions), 'w');
+  } else {
+    var file = fs.open(OUT_FILE, 'w');
+    //file.writeLine('date,type,check number,description,withdrawal,deposit,balance');
+    file.writeLine("Type,Trans Date,Post Date,Description,Amount,Medium,Balance");
+    var i;
+    for(i = 0; i < transactions.length; ++i) {
+      var t = transactions[i];
+      /*
+      var str = t.date + ',' +
+                t.type + ',' +
+                t.checkNumber + ',"' +
+                t.description + '","' +
+                t.withdrawal + '","' +
+                t.deposit + '","' +
+                t.balance + '"';
+                */
+
+      var isWithdrawal = (t.withdrawal.indexOf("$") > -1) &&
+                         (t.deposit.indexOf("$") == -1);
+
+      var amount;
+      if (isWithdrawal) {
+        amount = "-" + t.withdrawal;
+      } else {
+        amount = t.deposit;
+      }
+
+      var str = t.type + ',' +
+                ',' + // no trans date, just post date
+                t.date + ',' +
+                '"' + t.description + '",' +
+                '"' + amount + '",' +
+                'Schwab Checking' + ',' +
+                '"' + t.balance + '"';
+
+      file.writeLine(str)
+    }
+    file.close();
+  }
+};
+
